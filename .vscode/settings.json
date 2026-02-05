@@ -3,8 +3,9 @@
   "idf.espIdfPath": "/Users/plejd/esp/v5.5.2/esp-idf",
   "idf.pythonInstallPath": "/Users/plejd/.pyenv/shims/python3",
   "idf.openOcdConfigs": [
-    "board/esp32-wrover-kit-3.3v.cfg"
-  ],
+    "interface/ftdi/esp32_devkitj_v1.cfg",
+    "target/esp32.cfg"
+],
   "idf.port": "/dev/tty.usbserial-FD590778A9",
   "idf.toolsPath": "/Users/plejd/.espressif",
   "idf.customExtraVars": {
@@ -17,5 +18,6 @@
     "--compile-commands-dir=/Users/plejd/git/wheeliometer-project/data-collector/build"
 ],
 "idf.flashType": "UART",
-"idf.flashBaudRate": "115200"
+"idf.flashBaudRate": "115200",
+"idf.currentSetup": "/Users/plejd/esp/v5.5.2/esp-idf"
 }
