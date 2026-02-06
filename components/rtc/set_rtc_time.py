@@ -55,8 +55,7 @@ def set_rtc_time(port, baudrate=115200):
 
         command = f"SETRTC:{now.year},{now.month},{now.day},{now.hour},{now.minute},{now.second},{weekday}\n"
 
-        print(f"Setting RTC to: {now.strftime('%Y-%m-%d %H:%M:%S')} (weekday: {weekday})")
-        print(f"Sending command: {command.strip()}")
+        print(f"Setting RTC to: {now.strftime('%Y-%m-%d %H:%M:%S')}")
 
         # Send command
         ser.write(command.encode())

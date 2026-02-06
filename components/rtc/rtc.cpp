@@ -6,6 +6,9 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include "esp_timer.h"
+#include "esp_log.h"
+
+static const char* TAG = "RTC";
 
 static rtc_init_mode_t rtc_mode = RTC_MODE_COMPILE_TIME;
 static char serial_buffer[128];
@@ -89,9 +92,7 @@ void rtc_check_serial() {
 
     // Read available characters from stdin (non-blocking)
     int c;
-    int count = 0;
-    while ((c = fgetc(stdin)) != EOF && count < 10) {  // Limit reads per call
-        count++;
+    while ((c = fgetc(stdin)) != EOF) {
         if (c == '\n' || c == '\r') {
             if (buffer_pos > 0) {
                 serial_buffer[buffer_pos] = '\0';
@@ -99,9 +100,10 @@ void rtc_check_serial() {
                 // Check for SETRTC command: SETRTC:YYYY,MM,DD,HH,MM,SS,WEEKDAY
                 if (strncmp(serial_buffer, "SETRTC:", 7) == 0) {
                     int year, month, day, hour, minute, second, weekday;
-                    if (sscanf(serial_buffer + 7, "%d,%d,%d,%d,%d,%d,%d",
-                              &year, &month, &day, &hour, &minute, &second, &weekday) == 7) {
+                    int parsed = sscanf(serial_buffer + 7, "%d,%d,%d,%d,%d,%d,%d",
+                              &year, &month, &day, &hour, &minute, &second, &weekday);
 
+                    if (parsed == 7) {
                         m5::rtc_datetime_t datetime;
                         datetime.date.year = year;
                         datetime.date.month = month;
@@ -118,8 +120,10 @@ void rtc_check_serial() {
                                 year, month, day, hour, minute, second);
                         terminal_write(msg);
                         printf("OK: RTC time set\n");
+                        ESP_LOGI(TAG, "RTC time set successfully");
                     } else {
-                        printf("ERROR: Invalid SETRTC format\n");
+                        printf("ERROR: Invalid SETRTC format (parsed %d/7 values)\n", parsed);
+                        ESP_LOGE(TAG, "Invalid SETRTC format: parsed %d/7 values from '%s'", parsed, serial_buffer);
                     }
                 }
 
