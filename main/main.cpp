@@ -1,6 +1,8 @@
 #include <M5Unified.h>
 #include <stdio.h>
 #include <terminal.hpp>
+#include <buttons.hpp>
+#include <rtc.hpp>
 
 extern "C" {
     void app_main(void)
@@ -8,20 +10,21 @@ extern "C" {
         auto cfg = M5.config();
         M5.begin(cfg);
 
-        terminal_init(&M5.Display);
+        buttons_init();
 
-        uint16_t i = 0;
+        terminal_init(&M5.Display);
+        terminal_write("Wheeliometer startup complete");
+
+        // Initialize RTC
+        // Use RTC_MODE_COMPILE_TIME for automatic compile-time setting
+        // Use RTC_MODE_SERIAL to set time via serial with set_rtc_time.py
+        rtc_init(RTC_MODE_SERIAL);
+
         while (true) {
-            terminal_write("Msg %d: This text is way too long to fit in one line", i);
-            terminal_write("Hello\nWorld!\n");
-            terminal_write("Hello\n");
-            terminal_write("World");
-            terminal_write("");
-            M5.delay(500);
-            i++;
-            if (i > 3) {
-                break;
-            }
+            M5.delay(1);  // Give time to other tasks and feed watchdog
+            M5.update();
+            buttons_check();
+            rtc_check_serial();  // Check for serial commands
         }
     }
 
