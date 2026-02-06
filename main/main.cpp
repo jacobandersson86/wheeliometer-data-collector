@@ -3,6 +3,26 @@
 #include <terminal.hpp>
 #include <buttons.hpp>
 #include <rtc.hpp>
+#include <fs.hpp>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "esp_task_wdt.h"
+
+// Main application task
+void main_task(void *pvParameters) {
+    // Subscribe this task to the watchdog
+    esp_task_wdt_add(NULL);
+
+    while (true) {
+        M5.delay(10);  // Delay 10ms to give IDLE task more time
+        M5.update();
+        buttons_check();
+        rtc_check_serial();  // Check for serial commands
+
+        // Reset the watchdog for this task
+        esp_task_wdt_reset();
+    }
+}
 
 extern "C" {
     void app_main(void)
@@ -20,12 +40,24 @@ extern "C" {
         // Use RTC_MODE_SERIAL to set time via serial with set_rtc_time.py
         rtc_init(RTC_MODE_SERIAL);
 
-        while (true) {
-            M5.delay(1);  // Give time to other tasks and feed watchdog
-            M5.update();
-            buttons_check();
-            rtc_check_serial();  // Check for serial commands
+        // Initialize file system
+        if (fs_init()) {
+            terminal_write("File system ready");
+
+            // Display file system info
+            size_t total, used;
+            if (fs_get_info(&total, &used)) {
+                terminal_write("FS: %d/%d bytes (%.1f%% used)",
+                              used, total, (100.0 * used) / total);
+            }
+        } else {
+            terminal_write("File system init failed!");
         }
+
+        // Create main application task
+        xTaskCreate(main_task, "main_task", 4096, NULL, 5, NULL);
+
+        // app_main should return, not loop
     }
 
 }

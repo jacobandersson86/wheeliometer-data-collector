@@ -44,16 +44,24 @@ The M5StickC Plus includes a BM8563 RTC chip for timekeeping. You should set the
 
 See [RTC Setup Guide](components/rtc/RTC_SETUP.md) for detailed instructions on setting the date and time.
 
+### Using the File System
+
+The device has 960KB of internal flash storage for saving collected sensor data. The file system is automatically initialized at startup.
+
+See [File System Guide](components/fs/FS_GUIDE.md) for API reference and usage examples.
+
 ## Project Structure
 
 ```
 data-collector/
 ├── components/          # Custom components
 │   ├── buttons/        # Button handling
+│   ├── fs/            # File system (see FS_GUIDE.md)
 │   ├── rtc/           # Real-time clock (see RTC_SETUP.md)
 │   └── terminal/      # Display terminal output
 ├── main/              # Main application code
-└── managed_components/ # External dependencies
+├── managed_components/ # External dependencies
+└── partitions.csv     # Flash partition table
 ```
 
 ## License

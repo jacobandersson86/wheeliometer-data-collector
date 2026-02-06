@@ -1,6 +1,10 @@
 #include "buttons.hpp"
 #include "terminal.hpp"
+#include "fs.hpp"
+#include "rtc.hpp"
 #include <M5Unified.hpp>
+#include <stdio.h>
+#include <stdlib.h>
 
 void buttons_init() {
     // Button configuration can go here if needed
@@ -13,6 +17,46 @@ void buttons_check() {
 
     if (M5.BtnA.wasClicked()) {
         terminal_write("Button A clicked");
+
+        // Get current time for filename
+        char filename[64];
+        char time_str[32];
+        rtc_get_time_string(time_str, sizeof(time_str));
+
+        // Create filename from timestamp (replace spaces and colons with underscores)
+        char safe_time[32];
+        int j = 0;
+        for (int i = 0; time_str[i] != '\0' && j < 31; i++) {
+            if (time_str[i] == ' ' || time_str[i] == ':' || time_str[i] == '-') {
+                safe_time[j++] = '_';
+            } else {
+                safe_time[j++] = time_str[i];
+            }
+        }
+        safe_time[j] = '\0';
+
+        snprintf(filename, sizeof(filename), "/data_%s.txt", safe_time);
+
+        // Generate some jibberish data
+        char data[256];
+        int len = 0;
+        len += snprintf(data + len, sizeof(data) - len, "File created at: %s\n", time_str);
+        len += snprintf(data + len, sizeof(data) - len, "Random jibberish data:\n");
+
+        // Add some random-looking data
+        for (int i = 0; i < 10; i++) {
+            len += snprintf(data + len, sizeof(data) - len,
+                          "Line %d: %d %d %d %d\n",
+                          i, rand() % 1000, rand() % 1000, rand() % 1000, rand() % 1000);
+        }
+
+        // Write to file
+        int written = fs_write_file(filename, data, len);
+        if (written > 0) {
+            terminal_write("Created file: %s (%d bytes)", filename, written);
+        } else {
+            terminal_write("Failed to create file!");
+        }
     }
 
     if (M5.BtnA.wasHold()) {
@@ -20,7 +64,70 @@ void buttons_check() {
     }
 
     if (M5.BtnB.wasClicked()) {
-        terminal_write("Button B clicked");
+        terminal_write("Button B clicked - Listing and deleting files");
+
+        // List files to console
+        fs_list_files();
+
+        // Get filesystem info
+        size_t total, used;
+        if (fs_get_info(&total, &used)) {
+            terminal_write("Before delete: %d/%d bytes used", used, total);
+        }
+
+        // Delete all data files (files starting with data_)
+        terminal_write("Deleting test files...");
+
+        // Structure to hold deletion context
+        struct {
+            int deleted_count;
+        } ctx = {0};
+
+        // Lambda-style callback to delete files
+        auto delete_callback = [](const char* filename, void* user_data) {
+            auto* context = (decltype(ctx)*)user_data;
+
+            // Check if filename starts with "data_"
+            if (strncmp(filename, "data_", 5) == 0) {
+                char full_path[64];
+                snprintf(full_path, sizeof(full_path), "/%s", filename);
+                if (fs_delete_file(full_path)) {
+                    context->deleted_count++;
+                }
+            }
+        };
+
+        // Iterate through all files and delete matching ones
+        fs_foreach_file(delete_callback, &ctx);
+
+        terminal_write("Deleted %d files", ctx.deleted_count);
+
+        // Show updated filesystem info
+        if (fs_get_info(&total, &used)) {
+            terminal_write("After delete: %d/%d bytes used", used, total);
+        }
+    }
+
+    if (M5.BtnB.wasHold()) {
+        terminal_write("Button B held - Formatting filesystem...");
+        
+        // Get info before format
+        size_t total, used;
+        if (fs_get_info(&total, &used)) {
+            terminal_write("Before format: %d/%d bytes used", used, total);
+        }
+        
+        // Format the filesystem
+        if (fs_format()) {
+            terminal_write("Filesystem formatted successfully!");
+            
+            // Show info after format
+            if (fs_get_info(&total, &used)) {
+                terminal_write("After format: %d/%d bytes used", used, total);
+            }
+        } else {
+            terminal_write("Failed to format filesystem!");
+        }
     }
 
     if (M5.BtnC.wasClicked()) {

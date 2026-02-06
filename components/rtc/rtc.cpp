@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include "esp_timer.h"
 
 static rtc_init_mode_t rtc_mode = RTC_MODE_COMPILE_TIME;
 static char serial_buffer[128];
@@ -72,15 +73,25 @@ void rtc_check_serial() {
         return;
     }
 
+    // Throttle: only check every 100ms to avoid watchdog issues
+    static uint32_t last_check = 0;
+    uint32_t now = esp_timer_get_time() / 1000; // Convert to milliseconds
+    if (now - last_check < 100) {
+        return;
+    }
+    last_check = now;
+
     // Configure stdin for non-blocking mode once
     if (!stdin_configured) {
         fcntl(fileno(stdin), F_SETFL, O_NONBLOCK);
         stdin_configured = true;
     }
 
-    // Read available characters from stdin
+    // Read available characters from stdin (non-blocking)
     int c;
-    while ((c = fgetc(stdin)) != EOF) {
+    int count = 0;
+    while ((c = fgetc(stdin)) != EOF && count < 10) {  // Limit reads per call
+        count++;
         if (c == '\n' || c == '\r') {
             if (buffer_pos > 0) {
                 serial_buffer[buffer_pos] = '\0';
