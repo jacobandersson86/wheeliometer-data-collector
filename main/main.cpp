@@ -4,6 +4,7 @@
 #include <buttons.hpp>
 #include <rtc.hpp>
 #include <fs.hpp>
+#include <wifi.hpp>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_task_wdt.h"
@@ -53,7 +54,8 @@ extern "C" {
         } else {
             terminal_write("File system init failed!");
         }
-
+        // Initialize WiFi subsystem (but don't start AP yet)
+        wifi_init();
         // Create main application task
         xTaskCreate(main_task, "main_task", 4096, NULL, 5, NULL);
 

@@ -2,6 +2,7 @@
 #include "terminal.hpp"
 #include "fs.hpp"
 #include "rtc.hpp"
+#include "wifi.hpp"
 #include <M5Unified.hpp>
 #include <stdio.h>
 #include <stdlib.h>
@@ -64,74 +65,13 @@ void buttons_check() {
     }
 
     if (M5.BtnB.wasClicked()) {
-        terminal_write("Button B clicked - Listing and deleting files");
-
-        // List files to console
-        fs_list_files();
-
-        // Get filesystem info
-        size_t total, used;
-        if (fs_get_info(&total, &used)) {
-            terminal_write("Before delete: %d/%d bytes used", used, total);
-        }
-
-        // Delete all data files (files starting with data_)
-        terminal_write("Deleting test files...");
-
-        // Structure to hold deletion context
-        struct {
-            int deleted_count;
-        } ctx = {0};
-
-        // Lambda-style callback to delete files
-        auto delete_callback = [](const char* filename, void* user_data) {
-            auto* context = (decltype(ctx)*)user_data;
-
-            // Check if filename starts with "data_"
-            if (strncmp(filename, "data_", 5) == 0) {
-                char full_path[64];
-                snprintf(full_path, sizeof(full_path), "/%s", filename);
-                if (fs_delete_file(full_path)) {
-                    context->deleted_count++;
-                }
-            }
-        };
-
-        // Iterate through all files and delete matching ones
-        fs_foreach_file(delete_callback, &ctx);
-
-        terminal_write("Deleted %d files", ctx.deleted_count);
-
-        // Show updated filesystem info
-        if (fs_get_info(&total, &used)) {
-            terminal_write("After delete: %d/%d bytes used", used, total);
-        }
-    }
-
-    if (M5.BtnB.wasHold()) {
-        terminal_write("Button B held - Formatting filesystem...");
+        terminal_write("Button B clicked - Toggling WiFi AP");
         
-        // Get info before format
-        size_t total, used;
-        if (fs_get_info(&total, &used)) {
-            terminal_write("Before format: %d/%d bytes used", used, total);
-        }
-        
-        // Format the filesystem
-        if (fs_format()) {
-            terminal_write("Filesystem formatted successfully!");
-            
-            // Show info after format
-            if (fs_get_info(&total, &used)) {
-                terminal_write("After format: %d/%d bytes used", used, total);
-            }
+        if (wifi_is_ap_running()) {
+            wifi_stop_ap();
         } else {
-            terminal_write("Failed to format filesystem!");
+            wifi_start_ap();
         }
-    }
-
-    if (M5.BtnC.wasClicked()) {
-        terminal_write("Button C clicked");
     }
 
     if (M5.BtnPWR.wasClicked()) {
