@@ -5,6 +5,7 @@
 #include <rtc.hpp>
 #include <fs.hpp>
 #include <wifi.hpp>
+#include <webserver.hpp>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_task_wdt.h"
@@ -56,6 +57,10 @@ extern "C" {
         }
         // Initialize WiFi subsystem (but don't start AP yet)
         wifi_init();
+
+        // Initialize webserver subsystem (but don't start server yet)
+        webserver_init();
+
         // Create main application task
         xTaskCreate(main_task, "main_task", 4096, NULL, 5, NULL);
 

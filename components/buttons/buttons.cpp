@@ -3,6 +3,7 @@
 #include "fs.hpp"
 #include "rtc.hpp"
 #include "wifi.hpp"
+#include "webserver.hpp"
 #include <M5Unified.hpp>
 #include <stdio.h>
 #include <stdlib.h>
@@ -66,11 +67,15 @@ void buttons_check() {
 
     if (M5.BtnB.wasClicked()) {
         terminal_write("Button B clicked - Toggling WiFi AP");
-        
+
         if (wifi_is_ap_running()) {
+            // Stop webserver first, then WiFi
+            webserver_stop();
             wifi_stop_ap();
         } else {
+            // Start WiFi first, then webserver
             wifi_start_ap();
+            webserver_start();
         }
     }
 
