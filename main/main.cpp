@@ -6,6 +6,8 @@
 #include <fs.hpp>
 #include <wifi.hpp>
 #include <webserver.hpp>
+#include <imu_sampler.hpp>
+#include <imu_consumer.hpp>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_task_wdt.h"
@@ -55,18 +57,41 @@ extern "C" {
         } else {
             terminal_write("File system init failed!");
         }
+
         // Initialize WiFi subsystem (but don't start AP yet)
         wifi_init();
 
         // Initialize webserver subsystem (but don't start server yet)
         webserver_init();
 
+        // Initialize IMU sampler
+        imu_sampler_config_t imu_config = {
+            .accel_fsr = 2,     // AFS_8G (0=2G, 1=4G, 2=8G, 3=16G)
+            .gyro_fsr = 3,      // GFS_2000DPS (0=250, 1=500, 2=1000, 3=2000)
+            .odr = 0,           // ODR_1kHz (0=1kHz, 1=500Hz, 3=250Hz...)
+            .int_pin = 35,      // INT pin for M5StickC Plus (GPIO 35)
+            .queue_depth = 10   // Queue can hold 10 batches
+        };
+
+        if (imu_sampler_init(&imu_config)) {
+            terminal_write("IMU sampler initialized");
+
+            // Initialize consumer (running averages printer)
+            void* queue = imu_sampler_get_queue();
+            if (imu_consumer_init(queue)) {
+                terminal_write("IMU consumer ready");
+                terminal_write("Press Button A to start/stop");
+            } else {
+                terminal_write("IMU consumer init failed!");
+            }
+        } else {
+            terminal_write("IMU sampler init failed!");
+        }
+
         // Create main application task
         xTaskCreate(main_task, "main_task", 4096, NULL, 5, NULL);
 
         // app_main should return, not loop
     }
-
 }
-
 

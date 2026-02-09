@@ -4,6 +4,8 @@
 #include "rtc.hpp"
 #include "wifi.hpp"
 #include "webserver.hpp"
+#include "imu_sampler.hpp"
+#include "imu_consumer.hpp"
 #include <M5Unified.hpp>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,46 +20,27 @@ void buttons_check() {
     // was* methods are edge-triggered and only return true once per event
 
     if (M5.BtnA.wasClicked()) {
-        terminal_write("Button A clicked");
+        // Toggle IMU sampling
+        if (imu_sampler_is_running()) {
+            imu_sampler_stop();
+            terminal_write("IMU sampling STOPPED");
 
-        // Get current time for filename
-        char filename[64];
-        char time_str[32];
-        rtc_get_time_string(time_str, sizeof(time_str));
-
-        // Create filename from timestamp (replace spaces and colons with underscores)
-        char safe_time[32];
-        int j = 0;
-        for (int i = 0; time_str[i] != '\0' && j < 31; i++) {
-            if (time_str[i] == ' ' || time_str[i] == ':' || time_str[i] == '-') {
-                safe_time[j++] = '_';
-            } else {
-                safe_time[j++] = time_str[i];
-            }
-        }
-        safe_time[j] = '\0';
-
-        snprintf(filename, sizeof(filename), "/data_%s.txt", safe_time);
-
-        // Generate some jibberish data
-        char data[256];
-        int len = 0;
-        len += snprintf(data + len, sizeof(data) - len, "File created at: %s\n", time_str);
-        len += snprintf(data + len, sizeof(data) - len, "Random jibberish data:\n");
-
-        // Add some random-looking data
-        for (int i = 0; i < 10; i++) {
-            len += snprintf(data + len, sizeof(data) - len,
-                          "Line %d: %d %d %d %d\n",
-                          i, rand() % 1000, rand() % 1000, rand() % 1000, rand() % 1000);
-        }
-
-        // Write to file
-        int written = fs_write_file(filename, data, len);
-        if (written > 0) {
-            terminal_write("Created file: %s (%d bytes)", filename, written);
+            // Print final statistics
+            imu_sampler_stats_t stats;
+            imu_sampler_get_stats(&stats);
+            terminal_write("Stats: %llu samples, %u batches, %u overflows, %u drops",
+                         stats.total_samples, stats.batches_sent,
+                         stats.fifo_overflows, stats.queue_full_errors);
         } else {
-            terminal_write("Failed to create file!");
+            // Reset averages when starting
+            imu_consumer_reset_averages();
+            imu_sampler_reset_stats();
+
+            if (imu_sampler_start()) {
+                terminal_write("IMU sampling STARTED (1kHz)");
+            } else {
+                terminal_write("Failed to start IMU sampling");
+            }
         }
     }
 

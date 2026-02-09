@@ -1,3 +1,3 @@
 idf_component_register(SRCS "buttons.cpp"
                        INCLUDE_DIRS "include"
-                       REQUIRES terminal M5Unified fs rtc wifi webserver)
+                       REQUIRES terminal M5Unified fs rtc wifi webserver imu_sampler)
