@@ -4,8 +4,7 @@
 #include "rtc.hpp"
 #include "wifi.hpp"
 #include "webserver.hpp"
-#include "imu_sampler.hpp"
-#include "imu_consumer.hpp"
+#include "sample_collection.hpp"
 #include <M5Unified.hpp>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,27 +19,11 @@ void buttons_check() {
     // was* methods are edge-triggered and only return true once per event
 
     if (M5.BtnA.wasClicked()) {
-        // Toggle IMU sampling
-        if (imu_sampler_is_running()) {
-            imu_sampler_stop();
-            terminal_write("IMU sampling STOPPED");
-
-            // Print final statistics
-            imu_sampler_stats_t stats;
-            imu_sampler_get_stats(&stats);
-            terminal_write("Stats: %llu samples, %u batches, %u overflows, %u drops",
-                         stats.total_samples, stats.batches_sent,
-                         stats.fifo_overflows, stats.queue_full_errors);
+        // Toggle sample collection
+        if (sample_collection_is_active()) {
+            sample_collection_stop();
         } else {
-            // Reset averages when starting
-            imu_consumer_reset_averages();
-            imu_sampler_reset_stats();
-
-            if (imu_sampler_start()) {
-                terminal_write("IMU sampling STARTED (1kHz)");
-            } else {
-                terminal_write("Failed to start IMU sampling");
-            }
+            sample_collection_start();
         }
     }
 

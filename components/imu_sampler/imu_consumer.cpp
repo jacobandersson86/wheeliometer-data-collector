@@ -22,7 +22,7 @@ static struct {
     TaskHandle_t task_handle;
     imu_averages_t averages;
     uint64_t last_print_time;
-} g_consumer = {0};
+} g_consumer = {};
 
 // Forward declaration
 static void imu_consumer_task(void* pvParameters);

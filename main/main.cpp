@@ -7,7 +7,7 @@
 #include <wifi.hpp>
 #include <webserver.hpp>
 #include <imu_sampler.hpp>
-#include <imu_consumer.hpp>
+#include <sample_collection.hpp>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_task_wdt.h"
@@ -76,13 +76,12 @@ extern "C" {
         if (imu_sampler_init(&imu_config)) {
             terminal_write("IMU sampler initialized");
 
-            // Initialize consumer (running averages printer)
-            void* queue = imu_sampler_get_queue();
-            if (imu_consumer_init(queue)) {
-                terminal_write("IMU consumer ready");
+            // Initialize sample collection
+            if (sample_collection_init()) {
+                terminal_write("Sample collection ready");
                 terminal_write("Press Button A to start/stop");
             } else {
-                terminal_write("IMU consumer init failed!");
+                terminal_write("Sample collection init failed!");
             }
         } else {
             terminal_write("IMU sampler init failed!");
