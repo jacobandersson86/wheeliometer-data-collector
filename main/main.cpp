@@ -70,7 +70,7 @@ extern "C" {
             .gyro_fsr = 3,      // GFS_2000DPS (0=250, 1=500, 2=1000, 3=2000)
             .odr = 0,           // ODR_1kHz (0=1kHz, 1=500Hz, 3=250Hz...)
             .int_pin = 35,      // INT pin for M5StickC Plus (GPIO 35)
-            .queue_depth = 10   // Queue can hold 10 batches
+            .queue_depth = 50   // Queue can hold 50 batches (~2 seconds buffer for SPIFFS slowdowns)
         };
 
         if (imu_sampler_init(&imu_config)) {

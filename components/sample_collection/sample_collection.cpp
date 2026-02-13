@@ -12,8 +12,15 @@
 
 static const char* TAG = "SAMPLE_COLLECTION";
 
-// Minimum free space to continue collection (16KB - enough for final writes + FS overhead)
-static constexpr size_t MIN_FREE_SPACE = 16 * 1024;
+// Minimum free space to continue collection (64KB - SPIFFS needs more headroom due to fragmentation)
+static constexpr size_t MIN_FREE_SPACE = 64 * 1024;
+
+// Maximum consecutive write failures before stopping
+static constexpr uint32_t MAX_CONSECUTIVE_FAILURES = 5;
+
+// Stop if error rate exceeds this percentage over recent batches
+static constexpr uint32_t ERROR_RATE_WINDOW = 50;  // Check last 50 batches
+static constexpr uint32_t MAX_ERROR_RATE_PERCENT = 20;  // Stop if >20% errors
 
 // Global state
 static struct {
@@ -41,15 +48,15 @@ bool sample_collection_init(void) {
         return false;
     }
 
-    // Create collection task (normal priority)
+    // Create collection task (higher priority than sampler to prevent queue overflow)
     BaseType_t ret = xTaskCreatePinnedToCore(
         sample_collection_task,
         "sample_collect",
         8192,  // Stack size - larger for file operations
         NULL,
-        5,     // Normal priority
+        21,    // Higher than sampler (20) to drain queue faster
         &g_collection.task_handle,
-        0      // Core 0
+        1      // Core 1 - same as sampler for better cache coherency
     );
 
     if (ret != pdPASS) {
@@ -112,7 +119,7 @@ bool sample_collection_start(void) {
     }
     safe_time[j] = '\0';
 
-    snprintf(g_collection.stats.current_filename, 
+    snprintf(g_collection.stats.current_filename,
              sizeof(g_collection.stats.current_filename),
              "/spiffs/imu_%s.bin", safe_time);
 
@@ -123,6 +130,10 @@ bool sample_collection_start(void) {
         terminal_write("Failed to create file");
         return false;
     }
+
+    // Set large write buffer (8KB) to reduce SPIFFS operations
+    static char write_buffer[8192];
+    setvbuf(g_collection.file, write_buffer, _IOFBF, sizeof(write_buffer));
 
     ESP_LOGI(TAG, "Created file: %s", g_collection.stats.current_filename);
     terminal_write("File: %s", g_collection.stats.current_filename);
@@ -226,17 +237,40 @@ static void sample_collection_task(void* pvParameters) {
     (void)pvParameters;
 
     imu_batch_t batch;
+    uint32_t last_debug_time = 0;
+    uint32_t batches_since_debug = 0;
+    int64_t write_start_us = 0;
+    int64_t total_write_time_us = 0;
+    uint32_t consecutive_failures = 0;
+    uint32_t recent_batches = 0;
+    uint32_t recent_errors = 0;
 
-    ESP_LOGI(TAG, "Collection task started");
+    ESP_LOGI(TAG, "Collection task started (priority %d, core %d)",
+             uxTaskPriorityGet(NULL), xPortGetCoreID());
 
     while (true) {
         // Wait for batch from queue (blocking, 1 second timeout)
         if (xQueueReceive(g_collection.queue, &batch, pdMS_TO_TICKS(1000)) == pdTRUE) {
-            
+
             if (!g_collection.active || !g_collection.file) {
                 // Not collecting, discard batch
                 continue;
             }
+
+            // Debug: Log queue usage every 5 seconds
+            uint32_t now_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+            if (now_ms - last_debug_time >= 5000) {
+                UBaseType_t queue_items = uxQueueMessagesWaiting(g_collection.queue);
+                uint32_t avg_write_us = batches_since_debug > 0 ?
+                    (total_write_time_us / batches_since_debug) : 0;
+                ESP_LOGI(TAG, "Queue: %d/50 items | Avg write: %lu us/batch | Batches: %u",
+                         queue_items, avg_write_us, g_collection.stats.batches_written);
+                last_debug_time = now_ms;
+                batches_since_debug = 0;
+                total_write_time_us = 0;
+            }
+
+            write_start_us = esp_timer_get_time();
 
             // Check available space every 10 batches
             if (g_collection.stats.batches_written % 10 == 0) {
@@ -246,7 +280,7 @@ static void sample_collection_task(void* pvParameters) {
                     if (free < MIN_FREE_SPACE) {
                         ESP_LOGW(TAG, "Out of space: %d bytes free", free);
                         g_collection.stats.space_full_stops++;
-                        
+
                         // Stop collection
                         terminal_write("Storage full - stopping");
                         sample_collection_stop();
@@ -270,8 +304,40 @@ static void sample_collection_task(void* pvParameters) {
             // Write batch header
             size_t written = fwrite(&batch_header, 1, sizeof(batch_header), g_collection.file);
             if (written != sizeof(batch_header)) {
-                ESP_LOGE(TAG, "Failed to write batch header");
                 g_collection.stats.write_errors++;
+                consecutive_failures++;
+                recent_errors++;
+
+                // Track error rate in sliding window
+                if (recent_batches >= ERROR_RATE_WINDOW) {
+                    uint32_t error_rate = (recent_errors * 100) / recent_batches;
+                    if (error_rate > MAX_ERROR_RATE_PERCENT) {
+                        ESP_LOGW(TAG, "High error rate: %u%% over %u batches", error_rate, recent_batches);
+                        terminal_write("Too many write errors - stopping");
+                        g_collection.stats.space_full_stops++;
+                        sample_collection_stop();
+                        continue;
+                    }
+                }
+
+                // Check space and log
+                size_t total, used;
+                if (fs_get_info(&total, &used)) {
+                    size_t free = total - used;
+                    ESP_LOGE(TAG, "Failed to write batch header (free: %d KB, consecutive: %u, recent errors: %u/%u)",
+                             free / 1024, consecutive_failures, recent_errors, recent_batches);
+
+                    // Stop if out of space OR too many consecutive failures
+                    if (free < MIN_FREE_SPACE || consecutive_failures >= MAX_CONSECUTIVE_FAILURES) {
+                        ESP_LOGW(TAG, "Stopping collection: %s",
+                                 free < MIN_FREE_SPACE ? "out of space" : "too many consecutive failures");
+                        g_collection.stats.space_full_stops++;
+                        terminal_write("Storage full - stopping");
+                        sample_collection_stop();
+                    }
+                } else {
+                    ESP_LOGE(TAG, "Failed to write batch header (consecutive: %u)", consecutive_failures);
+                }
                 continue;
             }
 
@@ -279,20 +345,68 @@ static void sample_collection_task(void* pvParameters) {
             size_t sample_bytes = batch.sample_count * sizeof(imu_sample_t);
             written = fwrite(batch.samples, 1, sample_bytes, g_collection.file);
             if (written != sample_bytes) {
-                ESP_LOGE(TAG, "Failed to write samples");
                 g_collection.stats.write_errors++;
+                consecutive_failures++;
+                recent_errors++;
+
+                // Track error rate in sliding window
+                if (recent_batches >= ERROR_RATE_WINDOW) {
+                    uint32_t error_rate = (recent_errors * 100) / recent_batches;
+                    if (error_rate > MAX_ERROR_RATE_PERCENT) {
+                        ESP_LOGW(TAG, "High error rate: %u%% over %u batches", error_rate, recent_batches);
+                        terminal_write("Too many write errors - stopping");
+                        g_collection.stats.space_full_stops++;
+                        sample_collection_stop();
+                        continue;
+                    }
+                }
+
+                // Check space and log
+                size_t total, used;
+                if (fs_get_info(&total, &used)) {
+                    size_t free = total - used;
+                    ESP_LOGE(TAG, "Failed to write samples (free: %d KB, consecutive: %u, recent errors: %u/%u)",
+                             free / 1024, consecutive_failures, recent_errors, recent_batches);
+
+                    // Stop if out of space OR too many consecutive failures
+                    if (free < MIN_FREE_SPACE || consecutive_failures >= MAX_CONSECUTIVE_FAILURES) {
+                        ESP_LOGW(TAG, "Stopping collection: %s",
+                                 free < MIN_FREE_SPACE ? "out of space" : "too many consecutive failures");
+                        g_collection.stats.space_full_stops++;
+                        terminal_write("Storage full - stopping");
+                        sample_collection_stop();
+                    }
+                } else {
+                    ESP_LOGE(TAG, "Failed to write samples (consecutive: %u)", consecutive_failures);
+                }
                 continue;
             }
 
-            // Flush every 10 batches to ensure data is written
-            if (g_collection.stats.batches_written % 10 == 0) {
-                fflush(g_collection.file);
+            // Reset failure counter and track successful batch
+            consecutive_failures = 0;
+            recent_batches++;
+
+            // Reset sliding window after full cycle
+            if (recent_batches > ERROR_RATE_WINDOW * 2) {
+                recent_batches = ERROR_RATE_WINDOW;
+                recent_errors = (recent_errors * ERROR_RATE_WINDOW) / (ERROR_RATE_WINDOW * 2);
             }
 
             // Update statistics
             g_collection.stats.total_samples_written += batch.sample_count;
             g_collection.stats.total_bytes_written += sizeof(batch_header) + sample_bytes;
             g_collection.stats.batches_written++;
+
+            // Track write performance
+            int64_t write_duration_us = esp_timer_get_time() - write_start_us;
+            total_write_time_us += write_duration_us;
+            batches_since_debug++;
+
+            // Warn on slow writes (>500ms is unusual, 200-300ms is normal for SPIFFS wear leveling)
+            if (write_duration_us > 500000) {  // >500ms
+                ESP_LOGW(TAG, "Slow write: %lld ms for batch %u",
+                         write_duration_us / 1000, g_collection.stats.batches_written);
+            }
         }
     }
 }

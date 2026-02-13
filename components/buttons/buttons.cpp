@@ -8,10 +8,10 @@
 #include <M5Unified.hpp>
 #include <stdio.h>
 #include <stdlib.h>
+#include "esp_task_wdt.h"
 
 void buttons_init() {
-    // Button configuration can go here if needed
-    // For example: M5.BtnA.setDebounceThresh(20);
+    M5.BtnB.setHoldThresh(3000);
 }
 
 void buttons_check() {
@@ -43,6 +43,28 @@ void buttons_check() {
             wifi_start_ap();
             webserver_start();
         }
+    }
+
+    if (M5.BtnB.wasHold()) {
+        terminal_write("Button B held - Formatting storage...");
+
+        // Stop collection if active
+        if (sample_collection_is_active()) {
+            sample_collection_stop();
+        }
+
+        // Unsubscribe from watchdog during long format operation (~10 seconds)
+        esp_task_wdt_delete(NULL);
+
+        // Format filesystem
+        if (fs_format()) {
+            terminal_write("Storage formatted successfully!");
+        } else {
+            terminal_write("Format FAILED!");
+        }
+
+        // Resubscribe to watchdog
+        esp_task_wdt_add(NULL);
     }
 
     if (M5.BtnPWR.wasClicked()) {
