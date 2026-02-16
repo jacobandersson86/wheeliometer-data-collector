@@ -1,6 +1,7 @@
 #include <M5Unified.h>
 #include <stdio.h>
 #include <terminal.hpp>
+#include <screens.hpp>
 #include <buttons.hpp>
 #include <rtc.hpp>
 #include <fs.hpp>
@@ -23,6 +24,9 @@ void main_task(void *pvParameters) {
         buttons_check();
         rtc_check_serial();  // Check for serial commands
 
+        // Update screens (handles screen switching and updates)
+        screens_update();
+
         // Reset the watchdog for this task
         esp_task_wdt_reset();
     }
@@ -37,7 +41,7 @@ extern "C" {
         buttons_init();
 
         terminal_init(&M5.Display);
-        terminal_write("Wheeliometer startup complete");
+        screens_init(&M5.Display);
 
         // Initialize RTC
         // Use RTC_MODE_COMPILE_TIME for automatic compile-time setting
@@ -90,6 +94,7 @@ extern "C" {
         // Create main application task
         xTaskCreate(main_task, "main_task", 4096, NULL, 5, NULL);
 
+        terminal_write("Wheeliometer startup complete");
         // app_main should return, not loop
     }
 }
