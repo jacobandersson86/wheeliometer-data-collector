@@ -19,5 +19,6 @@
 ],
 "idf.flashType": "UART",
 "idf.flashBaudRate": "115200",
-"idf.currentSetup": "/Users/plejd/esp/v5.5.2/esp-idf"
+"idf.currentSetup": "/Users/plejd/esp/v5.5.2/esp-idf",
+"python-envs.pythonProjects": []
 }

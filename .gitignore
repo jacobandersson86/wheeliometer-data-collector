@@ -77,3 +77,6 @@ Desktop.ini
 *.suo       # Visual Studio Solution User Options
 *.sln.docstates # Visual Studio
 .vscode/
+
+# Proprietary local 3D model assets (do not commit)
+analysis/3d_models/proprietary/
