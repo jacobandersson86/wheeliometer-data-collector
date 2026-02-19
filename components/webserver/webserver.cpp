@@ -196,37 +196,34 @@ static esp_err_t download_handler(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
-    char full_path[72];
-    snprintf(full_path, sizeof(full_path), "/%s", filename);
+    // Construct path for fs functions (without base_path prefix)
+    char fs_path[72];
+    snprintf(fs_path, sizeof(fs_path), "/%s", filename);
 
-    ESP_LOGI(TAG, "Download request for: %s (path: %s)", filename, full_path);
+    // Construct full path for fopen (with /spiffs base_path prefix)
+    char full_path[80];
+    snprintf(full_path, sizeof(full_path), "/spiffs/%s", filename);
+
+    ESP_LOGI(TAG, "Download request for: %s (fs_path: %s, full_path: %s)", filename, fs_path, full_path);
 
     // Check if file exists
-    if (!fs_file_exists(full_path)) {
+    if (!fs_file_exists(fs_path)) {
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "File not found");
-        ESP_LOGE(TAG, "File not found: %s", full_path);
+        ESP_LOGE(TAG, "File not found: %s", fs_path);
         return ESP_FAIL;
     }
 
     // Get file size
-    long file_size = fs_get_file_size(full_path);
+    long file_size = fs_get_file_size(fs_path);
     if (file_size < 0) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to get file size");
         return ESP_FAIL;
     }
 
-    // Allocate buffer for file content
-    char* buffer = (char*)malloc(file_size);
-    if (!buffer) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Memory error");
-        return ESP_FAIL;
-    }
-
-    // Read file
-    int bytes_read = fs_read_file(full_path, buffer, file_size);
-    if (bytes_read < 0) {
-        free(buffer);
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to read file");
+    // Open file for reading (use full_path with /spiffs prefix)
+    FILE* f = fopen(full_path, "rb");
+    if (!f) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to open file");
         return ESP_FAIL;
     }
 
@@ -236,12 +233,43 @@ static esp_err_t download_handler(httpd_req_t *req) {
     snprintf(disposition, sizeof(disposition), "attachment; filename=\"%s\"", filename);
     httpd_resp_set_hdr(req, "Content-Disposition", disposition);
 
-    // Send file content
-    httpd_resp_send(req, buffer, bytes_read);
-    free(buffer);
+    // Stream file in chunks to avoid memory issues
+    const size_t chunk_size = 4096;  // 4KB chunks
+    char* buffer = (char*)malloc(chunk_size);
+    if (!buffer) {
+        fclose(f);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Memory error");
+        return ESP_FAIL;
+    }
 
-    ESP_LOGI(TAG, "Downloaded file: %s (%d bytes)", filename, bytes_read);
-    return ESP_OK;
+    size_t total_sent = 0;
+    size_t bytes_read;
+    esp_err_t err = ESP_OK;
+
+    while ((bytes_read = fread(buffer, 1, chunk_size, f)) > 0) {
+        if (httpd_resp_send_chunk(req, buffer, bytes_read) != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to send chunk");
+            err = ESP_FAIL;
+            break;
+        }
+        total_sent += bytes_read;
+    }
+
+    // Send empty chunk to signal end of response
+    if (err == ESP_OK) {
+        httpd_resp_send_chunk(req, NULL, 0);
+    }
+
+    free(buffer);
+    fclose(f);
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Downloaded file: %s (%zu bytes)", filename, total_sent);
+    } else {
+        ESP_LOGE(TAG, "Failed to download file: %s", filename);
+    }
+
+    return err;
 }
 
 // Handler for deleting files
