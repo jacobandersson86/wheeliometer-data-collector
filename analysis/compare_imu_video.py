@@ -249,9 +249,27 @@ def _mesh_to_arrays(mesh: TriangleMesh) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Replay IMU pose beside a video")
-    parser.add_argument("file", type=Path, help="Path to .bin file")
-    parser.add_argument("video", type=Path, help="Path to video file")
+    parser = argparse.ArgumentParser(
+        description="Replay IMU pose beside a video",
+        formatter_class=argparse.RawTextHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  python analysis/compare_imu_video.py data/sample.bin data/sample.mp4\n"
+            "  python analysis/compare_imu_video.py --sample sample\n"
+            "  python analysis/compare_imu_video.py --sample sample --log-file data/custom.log\n"
+        ),
+    )
+    parser.add_argument("file", type=Path, nargs="?", help="Path to .bin file")
+    parser.add_argument("video", type=Path, nargs="?", help="Path to video file")
+    parser.add_argument(
+        "--sample",
+        type=str,
+        default=None,
+        help=(
+            "Shortcut sample name that resolves to data/<sample>.bin, data/<sample>.mp4, "
+            "and data/<sample>.log"
+        ),
+    )
     parser.add_argument("--speed", type=float, default=1.0, help="Replay speed multiplier (default: 1.0)")
     parser.add_argument("--render-fps", type=float, default=60.0, help="Animation frame rate (default: 60)")
     parser.add_argument("--cube-size", type=float, default=1.0, help="Cube side length (default: 1.0)")
@@ -310,11 +328,39 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Render rotation only (translation is still computed internally)",
     )
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        default=None,
+        help="Optional path to .log file shown below the playback timeline",
+    )
     return parser
 
 
 def main() -> int:
     args = _build_arg_parser().parse_args()
+
+    imu_file = args.file
+    video_file = args.video
+    log_file = args.log_file
+
+    if args.sample is not None:
+        sample_root = Path(args.sample)
+        if sample_root.suffix:
+            sample_root = sample_root.with_suffix("")
+        if sample_root.parent == Path("."):
+            sample_root = Path("data") / sample_root
+
+        if imu_file is None:
+            imu_file = sample_root.with_suffix(".bin")
+        if video_file is None:
+            video_file = sample_root.with_suffix(".mp4")
+        if log_file is None:
+            log_file = sample_root.with_suffix(".log")
+
+    if imu_file is None or video_file is None:
+        print("Provide either positional arguments: <file.bin> <video.mp4>, or use --sample <name>", file=sys.stderr)
+        return 2
 
     if args.speed <= 0.0:
         print("--speed must be > 0", file=sys.stderr)
@@ -328,6 +374,17 @@ def main() -> int:
     if args.translation_scale <= 0.0:
         print("--translation-scale must be > 0", file=sys.stderr)
         return 2
+
+    log_text = ""
+    if log_file is not None:
+        try:
+            log_text = log_file.read_text(encoding="utf-8", errors="replace")
+        except FileNotFoundError:
+            print(f"Log file not found: {log_file}", file=sys.stderr)
+            return 1
+        except OSError as error:
+            print(f"Failed to read log file ({log_file}): {error}", file=sys.stderr)
+            return 1
 
     model_size_mm: tuple[float, float, float] | None = None
     if args.model_size_mm is not None:
@@ -348,9 +405,9 @@ def main() -> int:
         print(f"WARNING: {matrix_message}", file=sys.stderr)
 
     try:
-        parsed = parse_imu_file(args.file)
+        parsed = parse_imu_file(imu_file)
     except FileNotFoundError:
-        print(f"File not found: {args.file}", file=sys.stderr)
+        print(f"File not found: {imu_file}", file=sys.stderr)
         return 1
     except BinaryParseError as error:
         print(f"Parse error: {error}", file=sys.stderr)
@@ -387,9 +444,9 @@ def main() -> int:
         print(f"Python executable: {sys.executable}", file=sys.stderr)
         return 4
 
-    video_capture = cv2.VideoCapture(str(args.video))
+    video_capture = cv2.VideoCapture(str(video_file))
     if not video_capture.isOpened():
-        print(f"Failed to open video: {args.video}", file=sys.stderr)
+        print(f"Failed to open video: {video_file}", file=sys.stderr)
         return 5
 
     video_fps = float(video_capture.get(cv2.CAP_PROP_FPS))
@@ -455,7 +512,7 @@ def main() -> int:
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
     main_window = QtWidgets.QWidget()
-    main_window.setWindowTitle(f"IMU + Video Compare - {args.file.name}")
+    main_window.setWindowTitle(f"IMU + Video Compare - {imu_file.name}")
     main_layout = QtWidgets.QVBoxLayout(main_window)
     main_layout.setContentsMargins(8, 8, 8, 8)
     main_layout.setSpacing(8)
@@ -529,6 +586,14 @@ def main() -> int:
     controls_layout.addWidget(offset_label)
 
     main_layout.addLayout(controls_layout)
+
+    if log_file is not None:
+        log_textbox = QtWidgets.QPlainTextEdit()
+        log_textbox.setReadOnly(True)
+        log_textbox.setPlainText(log_text)
+        log_textbox.setMaximumHeight(120)
+        log_textbox.setPlaceholderText("Log file is empty")
+        main_layout.addWidget(log_textbox)
 
     main_window.resize(1600, 900)
     main_window.show()
@@ -671,7 +736,7 @@ def main() -> int:
 
         _set_video_frame(video_time_s)
         main_window.setWindowTitle(
-            f"IMU + Video Compare - {args.file.name} | t={display_time_s:.2f}s | video={video_time_s:.2f}s"
+            f"IMU + Video Compare - {imu_file.name} | t={display_time_s:.2f}s | video={video_time_s:.2f}s"
         )
         time_label.setText(f"{display_time_s:.2f}s")
 

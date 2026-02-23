@@ -38,6 +38,10 @@ idf.py flash monitor # Flash and monitor in one command
 
 ## Usage
 
+### Analysis Tools
+
+For IMU analysis and replay tools (including IMU + video comparison), see [analysis/README.md](analysis/README.md).
+
 ### Setting Up RTC Time
 
 The M5StickC Plus includes a BM8563 RTC chip for timekeeping. You should set the time when first using the device.

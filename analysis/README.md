@@ -194,15 +194,41 @@ IMU + video comparison helper:
 python analysis/compare_imu_video.py data/imu_2026_02_19_11_19_31.bin path/to/video.mp4
 ```
 
+Video conversion helper (MOV → downsampled MP4 named after BIN):
+
+```bash
+python analysis/convert_and_name_video.py data/imu_2026_02_19_13_06_33.mov data/imu_2026_02_19_13_06_33.bin
+```
+
+This creates `data/imu_2026_02_19_13_06_33.mp4` using:
+- `scale=640:-2,fps=24`
+- `libx264`, `preset=veryfast`, `crf=26`, `pix_fmt=yuv420p`
+- no audio (`-an`) and `+faststart`
+
+If conversion succeeds, the source `.mov` is deleted.
+
+Shortcut helper (matching names in `data/`):
+
+```bash
+python analysis/compare_imu_video.py --sample imu_2026_02_19_11_19_31
+```
+
+This resolves automatically to:
+- `data/imu_2026_02_19_11_19_31.bin`
+- `data/imu_2026_02_19_11_19_31.mp4`
+- `data/imu_2026_02_19_11_19_31.log`
+
 This opens a side-by-side view with:
 - left: 3D replay
 - right: video replay
 - one shared timeline + play/pause controls for both
 
 Video sync options:
+- `--sample <name>` shortcut that auto-loads `data/<name>.bin`, `data/<name>.mp4`, and `data/<name>.log`
 - `--video-offset-s <seconds>` sets initial video offset versus IMU timeline
   - positive offset: video is delayed relative to IMU timeline
   - negative offset: video is advanced relative to IMU timeline
+- `--log-file path/to/session.log` shows log file text in a small read-only box below the playback timeline
 - `--translation-scale <factor>` scales IMU-estimated translation in the 3D view
 - `--rotation-only` renders only rotation in 3D view while still computing translation internally
 - `--model-size-mm 48,24,13.5` enforces real-world STL size (mm) with uniform scaling
@@ -216,6 +242,9 @@ Interactive sync controls (compare tool):
 Performance tip:
 - If playback is slow, force lightweight 3D with `--use-cube`
 - Example: `python analysis/compare_imu_video.py data/imu_2026_02_19_11_19_31.bin path/to/video.mp4 --use-cube`
+
+Log display example:
+- `python analysis/compare_imu_video.py data/imu_2026_02_19_11_19_31.bin path/to/video.mp4 --log-file data/session.log`
 
 Additional package needed:
 - `opencv-python`
