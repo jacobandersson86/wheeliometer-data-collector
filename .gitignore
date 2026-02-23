@@ -80,3 +80,6 @@ Desktop.ini
 
 # Proprietary local 3D model assets (do not commit)
 analysis/3d_models/proprietary/
+
+# Collected data
+data/
