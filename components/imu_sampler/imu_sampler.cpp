@@ -7,8 +7,29 @@
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "driver/gpio.h"
+#include <algorithm>
 
 static const char* TAG = "IMU_SAMPLER";
+static constexpr uint16_t BATCH_SAMPLE_CAPACITY = 60;
+static constexpr uint32_t IDLE_POLL_DELAY_MS = 2;
+static constexpr uint32_t BUSY_POLL_DELAY_MS = 1;
+static constexpr int64_t SOFT_LOCK_WINDOW_US = 2000;
+static constexpr int64_t HARD_RESYNC_THRESHOLD_US = 20000;
+static constexpr int64_t MAX_SLEW_CORRECTION_US = 200;
+
+static uint32_t odr_to_period_us(uint8_t odr) {
+    switch (odr) {
+        case 0: return 1000;     // 1 kHz
+        case 1: return 2000;     // 500 Hz
+        case 3: return 4000;     // 250 Hz
+        case 4: return 5000;     // 200 Hz
+        case 7: return 8000;     // 125 Hz
+        case 9: return 10000;    // 100 Hz
+        case 19: return 20000;   // 50 Hz
+        case 99: return 100000;  // 10 Hz
+        default: return 1000;
+    }
+}
 
 // Global state
 static struct {
@@ -21,7 +42,7 @@ static struct {
     imu_sampler_config_t config;
     imu_sampler_stats_t stats;
     volatile bool data_ready_flag;
-} g_state = {0};
+} g_state{};
 
 // Forward declarations
 static void imu_sampler_task(void* pvParameters);
@@ -61,7 +82,7 @@ bool imu_sampler_init(const imu_sampler_config_t* config) {
     // Note: On M5StickC Plus, the MPU6886 INT pin may not be connected.
     // GPIO 35 is also input-only on ESP32 (no internal pullup available).
     // We'll use polling mode instead of interrupts.
-    ESP_LOGI(TAG, "Using polling mode (30ms interval) - INT pin not used");
+    ESP_LOGI(TAG, "Using polling mode (adaptive interval) - INT pin not used");
 
     // Create queue for batches
     g_state.queue = xQueueCreate(config->queue_depth, sizeof(imu_batch_t));
@@ -160,101 +181,122 @@ static void imu_sampler_task(void* pvParameters) {
     imu_batch_t batch;
     uint8_t fifo_count_buf[2];
     uint8_t fifo_data[14];  // One FIFO entry: 14 bytes
+    const uint32_t sample_period_us = odr_to_period_us(g_state.config.odr);
+    bool timestamp_lock_initialized = false;
+    uint64_t next_expected_timestamp_us = 0;
 
     ESP_LOGI(TAG, "Sampler task started");
 
     while (true) {
-        // Poll every 30ms (FIFO holds ~36 samples at 1kHz, fills in ~36ms)
-        vTaskDelay(pdMS_TO_TICKS(30));
-
         if (!g_state.running) {
-            // Not running, just wait
+            vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
 
-        // Read FIFO count
-        if (!g_state.mpu->readRegister(m5::MPU6886_Class::REG_FIFO_COUNTH, fifo_count_buf, 2)) {
-            continue;
-        }
+        bool drained_any_samples = false;
 
-        uint16_t fifo_count = (fifo_count_buf[0] << 8) | fifo_count_buf[1];
-
-        if (fifo_count == 0) {
-            continue;  // No data
-        }
-
-        // Log if FIFO is getting full (but don't treat as error yet)
-        if (fifo_count > 500) {
-            ESP_LOGD(TAG, "FIFO filling up: %d bytes", fifo_count);
-        }
-
-        // Only treat as overflow if impossibly large or clearly corrupted
-        if (fifo_count > 2048 || fifo_count == 0xFFFF) {
-            g_state.stats.fifo_overflows++;
-            ESP_LOGW(TAG, "FIFO count corrupted: %d, resetting", fifo_count);
-
-            // Hard reset FIFO
-            g_state.mpu->writeRegister8(m5::MPU6886_Class::REG_USER_CTRL, 0x00);
-            vTaskDelay(pdMS_TO_TICKS(5));
-            g_state.mpu->enableFIFO((m5::MPU6886_Class::Fodr)g_state.config.odr);
-            continue;
-        }
-
-        // Calculate number of complete samples in FIFO (14 bytes per sample)
-        uint16_t num_samples = fifo_count / 14;
-
-        if (num_samples == 0) {
-            continue;  // Incomplete sample
-        }
-
-        // Limit to batch size (we'll read remaining samples in next iteration)
-        if (num_samples > 40) {
-            ESP_LOGD(TAG, "Large FIFO: %d samples, reading 40", num_samples);
-            num_samples = 40;
-        }
-
-        // Record timestamp for the LAST sample we're about to read
-        batch.base_timestamp_us = esp_timer_get_time();
-        batch.sample_count = num_samples;
-
-        // Read samples from FIFO
-        bool read_error = false;
-        for (uint16_t i = 0; i < num_samples; i++) {
-            if (!g_state.mpu->readRegister(m5::MPU6886_Class::REG_FIFO_R_W, fifo_data, 14)) {
-                ESP_LOGE(TAG, "Failed to read FIFO data at sample %d", i);
-                batch.sample_count = i;  // Only count successfully read samples
-                read_error = true;
+        while (g_state.running) {
+            if (!g_state.mpu->readRegister(m5::MPU6886_Class::REG_FIFO_COUNTH, fifo_count_buf, 2)) {
                 break;
             }
 
-            // Parse FIFO data
-            batch.samples[i].accel_x = (int16_t)((fifo_data[0] << 8) | fifo_data[1]);
-            batch.samples[i].accel_y = (int16_t)((fifo_data[2] << 8) | fifo_data[3]);
-            batch.samples[i].accel_z = (int16_t)((fifo_data[4] << 8) | fifo_data[5]);
-            batch.samples[i].temp    = (int16_t)((fifo_data[6] << 8) | fifo_data[7]);
-            batch.samples[i].gyro_x  = (int16_t)((fifo_data[8] << 8) | fifo_data[9]);
-            batch.samples[i].gyro_y  = (int16_t)((fifo_data[10] << 8) | fifo_data[11]);
-            batch.samples[i].gyro_z  = (int16_t)((fifo_data[12] << 8) | fifo_data[13]);
+            uint16_t fifo_count = (fifo_count_buf[0] << 8) | fifo_count_buf[1];
+
+            if (fifo_count == 0) {
+                break;
+            }
+
+            if (fifo_count > 700) {
+                ESP_LOGW(TAG, "FIFO near full: %u bytes", fifo_count);
+            }
+
+            if (fifo_count > 2048 || fifo_count == 0xFFFF) {
+                g_state.stats.fifo_overflows++;
+                ESP_LOGW(TAG, "FIFO count corrupted: %u, resetting", fifo_count);
+
+                g_state.mpu->writeRegister8(m5::MPU6886_Class::REG_USER_CTRL, 0x00);
+                vTaskDelay(pdMS_TO_TICKS(5));
+                g_state.mpu->enableFIFO((m5::MPU6886_Class::Fodr)g_state.config.odr);
+                break;
+            }
+
+            uint16_t available_samples = fifo_count / 14;
+            if (available_samples == 0) {
+                break;
+            }
+
+            uint16_t num_samples = available_samples;
+            if (num_samples > BATCH_SAMPLE_CAPACITY) {
+                num_samples = BATCH_SAMPLE_CAPACITY;
+            }
+
+            const uint64_t capture_time_us = esp_timer_get_time();
+            batch.sample_count = num_samples;
+
+            for (uint16_t i = 0; i < num_samples; i++) {
+                if (!g_state.mpu->readRegister(m5::MPU6886_Class::REG_FIFO_R_W, fifo_data, 14)) {
+                    ESP_LOGE(TAG, "Failed to read FIFO data at sample %u", i);
+                    batch.sample_count = i;
+                    break;
+                }
+
+                batch.samples[i].accel_x = (int16_t)((fifo_data[0] << 8) | fifo_data[1]);
+                batch.samples[i].accel_y = (int16_t)((fifo_data[2] << 8) | fifo_data[3]);
+                batch.samples[i].accel_z = (int16_t)((fifo_data[4] << 8) | fifo_data[5]);
+                batch.samples[i].temp    = (int16_t)((fifo_data[6] << 8) | fifo_data[7]);
+                batch.samples[i].gyro_x  = (int16_t)((fifo_data[8] << 8) | fifo_data[9]);
+                batch.samples[i].gyro_y  = (int16_t)((fifo_data[10] << 8) | fifo_data[11]);
+                batch.samples[i].gyro_z  = (int16_t)((fifo_data[12] << 8) | fifo_data[13]);
+            }
+
+            if (batch.sample_count == 0) {
+                break;
+            }
+
+            drained_any_samples = true;
+
+            const uint64_t measured_base_timestamp_us =
+                capture_time_us - (uint64_t)(batch.sample_count - 1) * sample_period_us;
+
+            if (!timestamp_lock_initialized) {
+                batch.base_timestamp_us = measured_base_timestamp_us;
+                next_expected_timestamp_us = measured_base_timestamp_us + (uint64_t)batch.sample_count * sample_period_us;
+                timestamp_lock_initialized = true;
+            } else {
+                const uint64_t predicted_base_timestamp_us = next_expected_timestamp_us;
+                const int64_t phase_error_us =
+                    (int64_t)measured_base_timestamp_us - (int64_t)predicted_base_timestamp_us;
+
+                if (std::llabs(phase_error_us) >= HARD_RESYNC_THRESHOLD_US) {
+                    batch.base_timestamp_us = measured_base_timestamp_us;
+                } else if (std::llabs(phase_error_us) <= SOFT_LOCK_WINDOW_US) {
+                    int64_t correction_us = std::clamp(
+                        phase_error_us,
+                        -MAX_SLEW_CORRECTION_US,
+                        MAX_SLEW_CORRECTION_US
+                    );
+                    batch.base_timestamp_us = (uint64_t)((int64_t)predicted_base_timestamp_us + correction_us);
+                } else {
+                    batch.base_timestamp_us = predicted_base_timestamp_us;
+                }
+
+                next_expected_timestamp_us =
+                    batch.base_timestamp_us + (uint64_t)batch.sample_count * sample_period_us;
+            }
+
+            g_state.stats.total_samples += batch.sample_count;
+            g_state.stats.batches_sent++;
+
+            if (xQueueSend(g_state.queue, &batch, 0) != pdTRUE) {
+                g_state.stats.queue_full_errors++;
+                ESP_LOGW(TAG, "Queue full, dropping batch");
+            }
+
+            if (available_samples <= BATCH_SAMPLE_CAPACITY) {
+                break;
+            }
         }
 
-        // Skip sending batch if we couldn't read any samples
-        if (batch.sample_count == 0) {
-            continue;
-        }
-
-        // Adjust timestamps: the last sample read gets base_timestamp_us
-        // Earlier samples are (num_samples - 1) ms, (num_samples - 2) ms, etc. older
-        // So first sample timestamp = base_timestamp_us - (sample_count - 1) * 1000
-        batch.base_timestamp_us -= (batch.sample_count - 1) * 1000;
-
-        // Update statistics
-        g_state.stats.total_samples += num_samples;
-        g_state.stats.batches_sent++;
-
-        // Send batch to queue (non-blocking)
-        if (xQueueSend(g_state.queue, &batch, 0) != pdTRUE) {
-            g_state.stats.queue_full_errors++;
-            ESP_LOGW(TAG, "Queue full, dropping batch");
-        }
+        vTaskDelay(pdMS_TO_TICKS(drained_any_samples ? BUSY_POLL_DELAY_MS : IDLE_POLL_DELAY_MS));
     }
 }

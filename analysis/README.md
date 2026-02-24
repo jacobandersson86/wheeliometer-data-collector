@@ -127,6 +127,7 @@ Useful options:
 - `--sensor-to-body r11,r12,r13,r21,r22,r23,r31,r32,r33` sensor→body mapping matrix (row-major CSV)
 - `--translation-scale 1.0` scale factor for estimated translation from integrated linear acceleration
 - `--rotation-only` render orientation without applying translation (translation is still estimated)
+- `--pose-fusion-module analysis.orientation_fusion` choose translation/pose estimator module
 
 Translation notes:
 - Position starts at `(0, 0, 0)` and velocity starts at `(0, 0, 0)`.
@@ -231,8 +232,33 @@ Video sync options:
 - `--log-file path/to/session.log` shows log file text in a small read-only box below the playback timeline
 - `--translation-scale <factor>` scales IMU-estimated translation in the 3D view
 - `--rotation-only` renders only rotation in 3D view while still computing translation internally
+- `--pose-fusion-module <module>` chooses which `fuse_pose(...)` implementation to use
+- `--debug-still-residual` prints mean residual linear acceleration during still samples
 - `--model-size-mm 48,24,13.5` enforces real-world STL size (mm) with uniform scaling
 - `--stl-unit mm|m` sets default STL coordinate unit (default is `mm`)
+
+Alternative pose-fusion modules (no changes to existing implementation):
+- `analysis.orientation_fusion` (default): current baseline implementation
+- `analysis.orientation_fusion_zupt_drag`: stronger stillness ZUPT + acceleration deadband + velocity leakage
+- `analysis.orientation_fusion_planar`: horizontal-only translation (locks Z), tuned for table-surface distance tracking
+- `analysis.orientation_fusion_zupt_calibrated`: still-window gravity vector calibration + startup settle before translation
+- `analysis.orientation_fusion_gravity_plane`: translation only in plane orthogonal to estimated gravity (gravity-axis travel removed)
+
+Examples:
+
+```bash
+python analysis/compare_imu_video.py --sample imu_2026_02_19_11_19_31 \
+  --pose-fusion-module analysis.orientation_fusion_zupt_drag
+
+python analysis/compare_imu_video.py --sample imu_2026_02_19_11_19_31 \
+  --pose-fusion-module analysis.orientation_fusion_planar
+
+python analysis/compare_imu_video.py --sample imu_2026_02_19_11_19_31 \
+  --pose-fusion-module analysis.orientation_fusion_zupt_calibrated
+
+python analysis/compare_imu_video.py --sample imu_2026_02_19_11_19_31 \
+  --pose-fusion-module analysis.orientation_fusion_gravity_plane
+```
 
 Interactive sync controls (compare tool):
 - `,` / `.` nudges video offset by `-20 ms / +20 ms`

@@ -13,7 +13,7 @@ import numpy as np
 try:
     from analysis import BinaryParseError, parse_imu_file
     from analysis.orientation_fusion import (
-        fuse_pose,
+        mat3_mul_vec,
         parse_sensor_to_body_matrix,
         pose_matrix_4x4,
         quat_to_rotation_matrix,
@@ -24,7 +24,7 @@ try:
 except ImportError:
     from imu_binary_parser import BinaryParseError, parse_imu_file
     from orientation_fusion import (
-        fuse_pose,
+        mat3_mul_vec,
         parse_sensor_to_body_matrix,
         pose_matrix_4x4,
         quat_to_rotation_matrix,
@@ -302,6 +302,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--kp", type=float, default=1.8, help="Accelerometer correction gain (default: 1.8)")
     parser.add_argument(
+        "--pose-fusion-module",
+        type=str,
+        default="analysis.orientation_fusion",
+        help=(
+            "Python module path that provides fuse_pose(samples, accel_fsr, gyro_fsr, kp, sensor_to_body_matrix). "
+            "Examples: analysis.orientation_fusion (default), analysis.orientation_fusion_zupt_drag, "
+            "analysis.orientation_fusion_planar"
+        ),
+    )
+    parser.add_argument(
         "--video-offset-s",
         type=float,
         default=0.0,
@@ -329,12 +339,125 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Render rotation only (translation is still computed internally)",
     )
     parser.add_argument(
+        "--debug-still-residual",
+        action="store_true",
+        help="Print residual linear acceleration stats during still samples (for module comparison)",
+    )
+    parser.add_argument(
         "--log-file",
         type=Path,
         default=None,
         help="Optional path to .log file shown below the playback timeline",
     )
     return parser
+
+
+def _candidate_pose_module_names(module_name: str) -> list[str]:
+    names = [module_name]
+    if module_name.startswith("analysis."):
+        names.append(module_name[len("analysis.") :])
+    else:
+        names.append(f"analysis.{module_name}")
+
+    unique_names: list[str] = []
+    for name in names:
+        if name not in unique_names:
+            unique_names.append(name)
+    return unique_names
+
+
+def _load_pose_fuse_function(module_name: str):
+    errors: list[str] = []
+
+    for candidate_name in _candidate_pose_module_names(module_name):
+        try:
+            module = importlib.import_module(candidate_name)
+        except ImportError as error:
+            errors.append(f"{candidate_name}: {error}")
+            continue
+
+        fuse_pose = getattr(module, "fuse_pose", None)
+        if callable(fuse_pose):
+            return fuse_pose, candidate_name
+
+        errors.append(f"{candidate_name}: missing callable fuse_pose")
+
+    error_message = " | ".join(errors) if errors else "unknown import error"
+    raise ImportError(f"Could not load pose fusion module '{module_name}'. Tried: {error_message}")
+
+
+def _print_still_residual_debug(
+    *,
+    samples: list,
+    pose_samples: list,
+    accel_fsr: int,
+    sensor_to_body_matrix: list[list[float]],
+    module_name: str,
+) -> None:
+    if len(samples) != len(pose_samples):
+        print(
+            "DEBUG still residual: skipped (sample/pose length mismatch)",
+            file=sys.stderr,
+        )
+        return
+
+    gravity_m_s2 = 9.80665
+    accel_scale = accel_fsr / 32768.0
+
+    still_abs_xyz = [0.0, 0.0, 0.0]
+    still_abs_norm = 0.0
+    still_count = 0
+
+    for sample, pose in zip(samples, pose_samples):
+        if not pose.is_still:
+            continue
+
+        accel_sensor_g = (
+            sample.accel_x * accel_scale,
+            sample.accel_y * accel_scale,
+            sample.accel_z * accel_scale,
+        )
+        accel_body_g = mat3_mul_vec(sensor_to_body_matrix, accel_sensor_g)
+        accel_body_m_s2 = (
+            accel_body_g[0] * gravity_m_s2,
+            accel_body_g[1] * gravity_m_s2,
+            accel_body_g[2] * gravity_m_s2,
+        )
+
+        rotation3 = quat_to_rotation_matrix(pose.quaternion)
+        accel_world_m_s2 = rotate_vector(rotation3, accel_body_m_s2)
+        residual = (
+            accel_world_m_s2[0],
+            accel_world_m_s2[1],
+            accel_world_m_s2[2] - gravity_m_s2,
+        )
+
+        still_abs_xyz[0] += abs(residual[0])
+        still_abs_xyz[1] += abs(residual[1])
+        still_abs_xyz[2] += abs(residual[2])
+        still_abs_norm += float(np.linalg.norm(np.array(residual, dtype=np.float64)))
+        still_count += 1
+
+    if still_count == 0:
+        print(
+            f"DEBUG still residual [{module_name}]: no still samples detected",
+            file=sys.stderr,
+        )
+        return
+
+    mean_abs_x = still_abs_xyz[0] / still_count
+    mean_abs_y = still_abs_xyz[1] / still_count
+    mean_abs_z = still_abs_xyz[2] / still_count
+    mean_abs_norm = still_abs_norm / still_count
+
+    print(
+        f"DEBUG still residual [{module_name}] count={still_count}: "
+        f"mean|ax|={mean_abs_x:.4f} m/s^2, "
+        f"mean|ay|={mean_abs_y:.4f} m/s^2, "
+        f"mean|az|={mean_abs_z:.4f} m/s^2, "
+        f"mean||a||={mean_abs_norm:.4f} m/s^2",
+        file=sys.stderr,
+    )
 
 
 def main() -> int:
@@ -400,6 +523,12 @@ def main() -> int:
         print(f"Invalid --sensor-to-body: {error}", file=sys.stderr)
         return 2
 
+    try:
+        fuse_pose, resolved_pose_module = _load_pose_fuse_function(args.pose_fusion_module)
+    except ImportError as error:
+        print(str(error), file=sys.stderr)
+        return 2
+
     matrix_ok, matrix_message = validate_sensor_to_body_matrix(sensor_to_body_matrix)
     if not matrix_ok:
         print(f"WARNING: {matrix_message}", file=sys.stderr)
@@ -426,6 +555,16 @@ def main() -> int:
         kp=args.kp,
         sensor_to_body_matrix=sensor_to_body_matrix,
     )
+    print(f"Pose fusion module: {resolved_pose_module}")
+
+    if args.debug_still_residual:
+        _print_still_residual_debug(
+            samples=parsed.samples,
+            pose_samples=pose_samples,
+            accel_fsr=parsed.header.accel_fsr,
+            sensor_to_body_matrix=sensor_to_body_matrix,
+            module_name=resolved_pose_module,
+        )
 
     try:
         qt_module = importlib.import_module("pyqtgraph.Qt")

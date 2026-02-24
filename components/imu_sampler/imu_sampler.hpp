@@ -18,7 +18,7 @@ struct imu_sample_t {
 struct imu_batch_t {
     uint64_t base_timestamp_us;  // Timestamp of first sample in microseconds
     uint16_t sample_count;       // Number of samples in this batch
-    imu_sample_t samples[40];    // Up to 40 samples (fits in FIFO)
+    imu_sample_t samples[60];    // Batch chunk size for FIFO draining
 };
 
 // Configuration structure
